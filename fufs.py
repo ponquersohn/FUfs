@@ -16,27 +16,52 @@ import psutil
 class KillHandler:
     """Handles configurable delays for specific filesystem operations."""
 
-    root_names = ["sshd", "systemd", "bash"]
+    stop_parents = [
+        "sshd",
+        "systemd",
+        "login",
+        "node",
+    ]  # will stop at these parents and likk processes below this one
+    stop_processes = ["bash", "sh", "ssh"]
 
-    @classmethod
     def find_root_process(
-        cls,
+        self,
         pid,
     ):
         """Walk up the process tree to find a root process in root_names."""
         try:
-            proc = psutil.Process(pid)
-            while proc.parent().name() not in cls.root_names:
 
+            proc = psutil.Process(pid)
+            current_process = {
+                "pid": proc.pid,
+                "name": proc.name(),
+                "cmdline": proc.cmdline(),
+            }
+
+            while not (
+                proc.parent().name() in self.stop_parents
+                and proc.name() in self.stop_processes
+            ):
                 proc = proc.parent()
                 if proc is None:
-                    return None  # Hit the top without finding sshd/systemd
+                    self.logger.info(
+                        f"Reached the top of the process tree without finding a root process."
+                    )
+                    break  # Hit the top without finding sshd/systemd
+                current_process = {
+                    "pid": proc.pid,
+                    "name": proc.name(),
+                    "cmdline": proc.cmdline(),
+                    "child": current_process,
+                }
+
+            self.logger.info(f"Process ancestory: {current_process}")
+
             return proc
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return None
 
-    @classmethod
-    def build_process_tree(cls, root_proc):
+    def build_process_tree(self, root_proc):
         """Recursively build a tree of subprocesses from root_proc."""
         tree = {
             "pid": root_proc.pid,
@@ -46,20 +71,19 @@ class KillHandler:
         }
         try:
             for child in root_proc.children(recursive=False):
-                tree["children"].append(cls.build_process_tree(child))
+                tree["children"].append(self.build_process_tree(child))
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
         return tree
 
-    @classmethod
-    def trace_and_build_tree(cls, pid):
+    def trace_and_build_tree(self, pid):
         """Trace the process tree starting from the given PID."""
         if pid <= 0:
             raise ValueError("Invalid PID: must be greater than 0.")
-        root_proc = cls.find_root_process(pid)
+        root_proc = self.find_root_process(pid)
         if root_proc is None:
             raise RuntimeError("No matching root process found.")
-        return cls.build_process_tree(root_proc)
+        return self.build_process_tree(root_proc)
 
     def __init__(self):
         """Initialize the KillHandler."""
